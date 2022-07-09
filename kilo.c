@@ -2,16 +2,19 @@
 #include <stdlib.h>
 #include <sys/ioctl.h>
 #include <errno.h>
+#include <string.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <termios.h>
 
 /*** defines ***/
+#define KILO_VERSION "0.0.1"
 #define CTRL_KEY(k) ((k) & 0x1f)
 
 /*** data ***/
 struct editorConfig{
+	int cx, cy;
 	int screenrows;
 	int screencols;
 	struct termios orig_termios;
@@ -82,14 +85,38 @@ int getWindowSize(int *rows, int *cols){
 
 	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0){
 		if (write(STDOUT_FILENO, "\x1b[999C\xb1[999B",12) != 12) return -1;
-		editorReadKey();
+		
 		return getCursorPosition(rows, cols);
 	}else{
 		*cols = ws.ws_col;
 		*rows = ws.ws_row;
 		return 0;
 	}
+
 }
+
+/*** append buffer ***/
+
+struct abuf{
+	char *b;
+	int len;
+};
+
+#define ABUF_INIT {NULL,0}
+
+void abAppend(struct abuf *ab,const char *s, int len){
+	char *new = realloc(ab ->b, ab->len + len);
+
+	if (new == NULL) return;
+	memcpy(&new[ab->len], s, len);
+	ab ->b = new;
+	ab->len += len;
+}
+
+void abFree(struct abuf *ab){
+	free(ab->b);
+}
+
 
 /*** input ***/
 
@@ -107,26 +134,52 @@ void editorProcessKeypress(){
 
 /*** output ***/
 
-void editorDrawRows(){
+void editorDrawRows(struct abuf *ab){
 	int y;
-	/*** printf("Size of Screen Rows: %d",E.screenrows); ***/
 	for (y=0; y< E.screenrows; y++){
-		write(STDOUT_FILENO, "~\r\n",3);
+		if (y == E.screenrows /3){
+			char welcome[80];
+			int welcomelen = snprintf(welcome,sizeof(welcome),
+				       "Kilo Editor -- version %s", KILO_VERSION);
+			if (welcomelen > E.screencols) welcomelen = E.screencols;
+			int padding = (E.screencols - welcomelen)/2;
+			if (padding){
+				abAppend(ab, "~",1);
+				padding--;
+			}
+			while (padding --) abAppend(ab," ",1);
+			abAppend(ab,welcome,welcomelen);
+		}else{
+			abAppend(ab, "~",1);
+		}
+		abAppend(ab, "\x1b[K", 3);
+
+		if (y <E.screenrows-1){
+			abAppend(ab, "\r\n", 2);
+		}
 		};
 }
 
 void editorRefreshScreen(){
-	write(STDOUT_FILENO, "\x1b[2J", 4);
-	write(STDOUT_FILENO, "\x1b[H", 3);
+	struct abuf ab = ABUF_INIT;
 
-	editorDrawRows();
+	abAppend(&ab, "\x1b[?25l", 6);	
+	abAppend(&ab, "\x1b[H", 3);
 
-	write(STDOUT_FILENO, "\x1b[H", 3);
+	editorDrawRows(&ab);
+
+	abAppend(&ab, "\x1b[H", 3);
+	abAppend(&ab, "\x1b[?25h", 6);	
+	write(STDOUT_FILENO, ab.b, ab.len);
+        abFree(&ab);
 }
 
 /*** init ***/
 
 void initEditor(){
+	E.cx = 0;
+	E.cy = 0;
+
 	if (getWindowSize(&E.screenrows, &E.screencols) == -1) die("getWindowSize");
 }
 
